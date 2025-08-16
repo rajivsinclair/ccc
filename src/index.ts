@@ -6,46 +6,131 @@ import { Command } from "commander";
 import chalk from "chalk";
 import ora from "ora";
 import { confirm } from "@clack/prompts";
+import inquirer from "inquirer";
+import { detectBoundaries, pruneToBoundary, extractTimestamp, type Boundary } from "./boundary-detector.js";
+import { promisify } from "util";
+import { stat } from "fs";
+const statAsync = promisify(stat);
 
 // ---------- CLI Definition ----------
 const program = new Command()
-  .name("claude-prune")
-  .description("Prune early messages from a Claude Code session.jsonl file")
-  .version("1.1.0");
+  .name("ccc")
+  .description("Claude Code Commit Intelligence - Smart session pruning with boundary detection")
+  .version("2.0.0");
 
 program
   .command("prune")
-  .description("Prune early messages from a session")
-  .argument("<sessionId>", "UUID of the session (without .jsonl)")
+  .description("Prune early messages from a session (legacy mode)")
+  .argument("[sessionId]", "UUID of the session (without .jsonl) - uses most recent if not provided")
   .requiredOption("-k, --keep <number>", "number of *message* objects to keep", parseInt)
   .option("--dry-run", "show what would happen but don't write")
-  .action(main);
+  .action(async (sessionId, opts) => {
+    if (!sessionId) {
+      sessionId = await findMostRecentSession();
+      if (!sessionId) {
+        console.error(chalk.red("❌ No sessions found in current project"));
+        process.exit(1);
+      }
+      console.log(chalk.blue(`ℹ️  Using most recent session: ${sessionId}`));
+    }
+    await main(sessionId, opts);
+  });
 
 program
   .command("restore")
   .description("Restore a session from the latest backup")
-  .argument("<sessionId>", "UUID of the session to restore (without .jsonl)")
+  .argument("[sessionId]", "UUID of the session to restore (without .jsonl) - uses most recent if not provided")
   .option("--dry-run", "show what would be restored but don't write")
-  .action(restore);
+  .action(async (sessionId, opts) => {
+    if (!sessionId) {
+      sessionId = await findMostRecentSession();
+      if (!sessionId) {
+        console.error(chalk.red("❌ No sessions found in current project"));
+        process.exit(1);
+      }
+      console.log(chalk.blue(`ℹ️  Using most recent session: ${sessionId}`));
+    }
+    await restore(sessionId, opts);
+  });
 
-// For backward compatibility, make prune the default command
+// Boundary pruning is now the default behavior when no -k flag is provided
+
+// Default command: boundary pruning when no -k flag, legacy pruning with -k flag
 program
   .argument("[sessionId]", "UUID of the session (without .jsonl)")
   .option("-k, --keep <number>", "number of *message* objects to keep", parseInt)
   .option("--dry-run", "show what would happen but don't write")
-  .action((sessionId, opts) => {
-    if (sessionId && opts.keep) {
+  .action(async (sessionId, opts) => {
+    // If no sessionId provided, find the most recent session
+    if (!sessionId) {
+      sessionId = await findMostRecentSession();
+      if (!sessionId) {
+        console.error(chalk.red("❌ No sessions found in current project"));
+        process.exit(1);
+      }
+      console.log(chalk.blue(`ℹ️  Using most recent session: ${sessionId}`));
+    }
+    
+    if (opts.keep) {
+      // Legacy mode: use -k flag for message count pruning
       main(sessionId, opts);
     } else {
-      program.help();
+      // Default mode: boundary detection pruning
+      boundaryPrune(sessionId, opts);
     }
   });
 
 // Extract core logic for testing
+export { detectBoundaries, pruneToBoundary } from "./boundary-detector.js";
+
+// Find the most recent session in the current project
+export async function findMostRecentSession(): Promise<string | null> {
+  const cwdProject = process.cwd().replace(/\//g, '-');
+  const projectDir = join(homedir(), ".claude", "projects", cwdProject);
+  
+  if (!(await fs.pathExists(projectDir))) {
+    return null;
+  }
+  
+  try {
+    const files = await fs.readdir(projectDir);
+    const sessionFiles = files
+      .filter(f => f.endsWith('.jsonl') && !f.includes('.jsonl.')) // Exclude backups
+      .map(f => f.replace('.jsonl', ''));
+    
+    if (sessionFiles.length === 0) {
+      return null;
+    }
+    
+    // Get modification times for each session file
+    const sessionStats = await Promise.all(
+      sessionFiles.map(async (sessionId) => {
+        const filePath = join(projectDir, `${sessionId}.jsonl`);
+        try {
+          const stats = await statAsync(filePath);
+          return { sessionId, mtime: stats.mtime };
+        } catch {
+          return null;
+        }
+      })
+    );
+    
+    // Filter out failed stats and sort by modification time (newest first)
+    const validSessions = sessionStats
+      .filter((stat): stat is { sessionId: string; mtime: Date } => stat !== null)
+      .sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+    
+    return validSessions.length > 0 ? validSessions[0].sessionId : null;
+  } catch {
+    return null;
+  }
+}
+
 export function pruneSessionLines(lines: string[], keepN: number): { outLines: string[], kept: number, dropped: number, assistantCount: number } {
   const MSG_TYPES = new Set(["user", "assistant", "system"]);
   const msgIndexes: number[] = [];
   const assistantIndexes: number[] = [];
+  const keptToolUseIds = new Set<string>();
 
   // Pass 1 – locate message objects (skip first line entirely)
   lines.forEach((ln, i) => {
@@ -70,7 +155,26 @@ export function pruneSessionLines(lines: string[], keepN: number): { outLines: s
     cutFrom = assistantIndexes[assistantIndexes.length - keepNSafe];
   }
 
-  // Pass 2 – build pruned output
+  // Pass 2 – identify kept tool_use_ids from assistant messages that will be kept
+  lines.forEach((ln, idx) => {
+    if (idx === 0) return;
+    
+    try {
+      const obj = JSON.parse(ln);
+      if (obj.type === "assistant" && idx >= cutFrom) {
+        // Extract tool_use_ids from content array
+        if (Array.isArray(obj.content)) {
+          obj.content.forEach((item: any) => {
+            if (item.type === "tool_use" && item.id) {
+              keptToolUseIds.add(item.id);
+            }
+          });
+        }
+      }
+    } catch { /* not JSON or no tool uses */ }
+  });
+
+  // Pass 3 – build pruned output
   const outLines: string[] = [];
   let kept = 0;
   let dropped = 0;
@@ -121,7 +225,21 @@ export function pruneSessionLines(lines: string[], keepN: number): { outLines: s
         dropped++; 
       }
     } else {
-      outLines.push(ln); // always keep tool lines, etc.
+      // Check if this is a tool_result that references a kept tool_use_id
+      let shouldKeep = true;
+      try {
+        const obj = JSON.parse(ln);
+        if (obj.type === "tool_result" && obj.tool_use_id) {
+          // Only keep if the corresponding tool_use was kept
+          shouldKeep = keptToolUseIds.has(obj.tool_use_id);
+        }
+      } catch {
+        // Not JSON or not a tool_result, keep as before
+      }
+      
+      if (shouldKeep) {
+        outLines.push(ln);
+      }
     }
   });
 
@@ -237,4 +355,95 @@ async function restore(sessionId: string, opts: { dryRun?: boolean }) {
     spinner.fail(chalk.red(`Error: ${error}`));
     process.exit(1);
   }
+}
+
+// ---------- Boundary Prune ----------
+async function boundaryPrune(sessionId: string, opts: { dryRun?: boolean }) {
+  const cwdProject = process.cwd().replace(/\//g, '-');
+  const file = join(homedir(), ".claude", "projects", cwdProject, `${sessionId}.jsonl`);
+
+  if (!(await fs.pathExists(file))) {
+    console.error(chalk.red(`❌ No transcript at ${file}`));
+    process.exit(1);
+  }
+
+  const spinner = ora(`Analyzing boundaries in ${file}`).start();
+  const raw = await fs.readFile(file, "utf8");
+  const lines = raw.split(/\r?\n/).filter(Boolean);
+
+  const { boundaries, totalCharacters } = detectBoundaries(lines);
+  
+  spinner.succeed(`Found ${boundaries.length} boundaries in ${lines.length} lines`);
+
+  if (boundaries.length === 0) {
+    console.log(chalk.yellow("No boundaries found in session file."));
+    return;
+  }
+
+  // Create choices for inquirer
+  const choices = boundaries.map((boundary, index) => {
+    const timestamp = extractTimestamp(lines[boundary.lineNumber]) || 'Unknown time';
+    const retentionDisplay = `${boundary.retentionPercentage}%`;
+    
+    return {
+      name: `[${timestamp}] ${boundary.description}\n    Retention: ${retentionDisplay}`,
+      value: boundary,
+      short: boundary.description
+    };
+  });
+
+  // Add option to cancel
+  choices.push({
+    name: chalk.red('Cancel - do not prune'),
+    value: null,
+    short: 'Cancel'
+  });
+
+  console.log(chalk.bold('\nSelect pruning boundary (↑/↓ to navigate, Enter to confirm):\n'));
+  
+  const { selectedBoundary } = await inquirer.prompt([
+    {
+      type: 'list',
+      name: 'selectedBoundary',
+      message: 'Choose boundary:',
+      choices,
+      pageSize: 10
+    }
+  ]);
+
+  if (!selectedBoundary) {
+    console.log(chalk.yellow('Cancelled.'));
+    return;
+  }
+
+  // Confirm the action if not dry run
+  if (!opts.dryRun && process.stdin.isTTY) {
+    const ok = await confirm({ 
+      message: chalk.yellow(`Prune to selected boundary (${selectedBoundary.retentionPercentage}% retention)?`), 
+      initialValue: true 
+    });
+    if (!ok) {
+      console.log(chalk.yellow('Cancelled.'));
+      return;
+    }
+  }
+
+  const pruneSpinner = ora('Pruning session...').start();
+  const { outLines, kept, dropped } = pruneToBoundary(lines, selectedBoundary.lineNumber);
+
+  pruneSpinner.succeed(`${chalk.green("Pruned")} to boundary (${kept} kept, ${dropped} dropped messages)`);
+
+  if (opts.dryRun) {
+    console.log(chalk.cyan("Dry-run only ➜ no files written."));
+    return;
+  }
+
+  const backupDir = join(homedir(), ".claude", "projects", cwdProject, "prune-backup");
+  await fs.ensureDir(backupDir);
+  const backup = join(backupDir, `${sessionId}.jsonl.${Date.now()}`);
+  await fs.copyFile(file, backup);
+  await fs.writeFile(file, outLines.join("\n") + "\n");
+
+  console.log(chalk.bold.green("✅ Done:"), chalk.white(`${file}`));
+  console.log(chalk.dim(`Backup at ${backup}`));
 }

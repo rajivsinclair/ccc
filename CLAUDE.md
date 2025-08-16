@@ -30,8 +30,9 @@ bunx vitest src/index.test.ts
 **Core Logic**: The `pruneSessionLines()` function (exported for testing) contains the main pruning algorithm that:
 1. Always preserves the first line (session metadata/summary)
 2. Finds assistant message indices and keeps everything from the Nth-to-last assistant message forward
-3. Preserves all non-message lines (tool results, system diagnostics)
-4. **Cache Token Hack**: Zeros out the last non-zero `cache_read_input_tokens` to reduce UI context percentage
+3. Tracks `tool_use_id`s from kept assistant messages to prevent orphaned `tool_result` blocks
+4. Only preserves tool results that have corresponding `tool_use` blocks in kept messages
+5. **Cache Token Hack**: Zeros out the last non-zero `cache_read_input_tokens` to reduce UI context percentage
 
 **Restore Logic**: The `findLatestBackup()` function (exported for testing) handles backup file discovery:
 1. Filters files by session ID pattern (`{sessionId}.jsonl.{timestamp}`)
