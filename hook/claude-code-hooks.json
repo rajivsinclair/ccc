@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "post-commit": {
+      "enabled": true,
+      "command": "~/GitHub/ccc/hook/auto-prune.sh post-commit",
+      "description": "Auto-prune session after git commits"
+    },
+    "post-pr": {
+      "enabled": true,
+      "command": "~/GitHub/ccc/hook/auto-prune.sh post-pr",
+      "description": "Auto-prune session after PR creation"
+    },
+    "context-high": {
+      "enabled": true,
+      "threshold": 70,
+      "command": "~/GitHub/ccc/hook/auto-prune.sh context-check",
+      "description": "Auto-prune when context usage exceeds threshold"
+    }
+  },
+  "settings": {
+    "auto_boundary_markers": true,
+    "interactive_mode": false,
+    "default_retention": 10,
+    "backup_before_prune": true
+  }
+}

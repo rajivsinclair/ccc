@@ -1,0 +1,131 @@
+{
+  "model": "claude-3-5-haiku-latest",
+  "max_lookback": 500,
+  "target_tokens": 2000,
+  "max_tokens": 3000,
+  "cache_duration": 30,
+  "git_cache_duration": 5,
+  "batch_boundary_interval": 300,
+  "commit_formats": {
+    "conventional": true,
+    "linear": true,
+    "emoji": false,
+    "gitmoji": false
+  },
+  "relevance_weights": {
+    "task_delegation": 10,
+    "user_prompt": 9,
+    "git_command": 8,
+    "file_operation": 7,
+    "todo_management": 7,
+    "summary": 6,
+    "decision": 5,
+    "error": 3,
+    "tool_result": 2,
+    "acknowledgment": 1,
+    "verbose_output": 0
+  },
+  "bloat_thresholds": {
+    "files": 10,
+    "additions": 300,
+    "deletions": 200,
+    "categories": 3
+  },
+  "statusline_cache": {
+    "min_ttl": 3,
+    "max_ttl": 10,
+    "target_operation_time": 50
+  },
+  "variant_settings": {
+    "minimal": {
+      "enabled": true,
+      "cache_duration": 10,
+      "use_llm": false
+    },
+    "original": {
+      "enabled": true,
+      "cache_duration": 30,
+      "use_llm": true,
+      "llm_timeout": 300
+    },
+    "adaptive": {
+      "enabled": true,
+      "cache_duration": "adaptive",
+      "use_llm": true,
+      "performance_tracking": true,
+      "adaptive_cache_min": 3,
+      "adaptive_cache_max": 30
+    },
+    "bloat_detector": {
+      "enabled": true,
+      "warning_mode": "visual",
+      "auto_reject": false,
+      "custom_thresholds": false
+    },
+    "session_logger": {
+      "enabled": true,
+      "log_format": "markdown",
+      "include_metrics": true,
+      "log_location": ".claude/SESSION_LOG.md"
+    },
+    "multi_format": {
+      "enabled": true,
+      "auto_detect": true,
+      "fallback_format": "conventional"
+    }
+  },
+  "global_settings": {
+    "debug_mode": false,
+    "error_logging": true,
+    "silent_failures": true,
+    "parallel_sessions": true,
+    "lock_timeout": 300,
+    "dispatcher_enabled": true
+  },
+  "performance_profiles": {
+    "fast": {
+      "description": "Maximum speed, minimal features",
+      "variants": ["minimal"],
+      "cache_aggressive": true,
+      "skip_llm": true
+    },
+    "balanced": {
+      "description": "Good performance with AI features",
+      "variants": ["original"],
+      "cache_normal": true,
+      "use_llm": true
+    },
+    "adaptive": {
+      "description": "Adjusts to repository size",
+      "variants": ["adaptive"],
+      "cache_smart": true,
+      "use_llm": true
+    },
+    "comprehensive": {
+      "description": "All features enabled",
+      "variants": ["original", "bloat_detector", "session_logger"],
+      "cache_normal": true,
+      "use_llm": true
+    }
+  },
+  "team_conventions": {
+    "enforce_format": false,
+    "required_format": "conventional",
+    "max_commit_size": {
+      "files": 15,
+      "lines": 500
+    },
+    "require_issue_reference": false,
+    "branch_naming": {
+      "pattern": "^(feature|fix|docs|chore)/[a-z0-9-]+$",
+      "enforce": false
+    }
+  },
+  "installation_defaults": {
+    "variant": "original",
+    "status_line": "intent",
+    "create_commands": true,
+    "backup_existing": true,
+    "interactive_mode": true
+  }
+}
